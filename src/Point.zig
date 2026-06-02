@@ -37,6 +37,16 @@ pub fn PointType(comptime units: dvui.enums.Units) type {
             return .{ .x = a.x - b.x, .y = a.y - b.y };
         }
 
+        pub fn dot(self: *Self, b: Self) f32 {
+            return self.x * b.x + self.y * b.y;
+        }
+
+        pub fn dist(self: *Self, b: Self) f32 {
+            const x_square = (self.x - b.x) * (self.x - b.x);
+            const y_square = (self.y - b.y) * (self.y - b.y);
+            return @sqrt(x_square + y_square);
+        }
+
         pub fn min(a: Self, b: Self) Self {
             return .{ .x = @min(a.x, b.x), .y = @min(a.y, b.y) };
         }

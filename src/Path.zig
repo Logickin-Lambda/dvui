@@ -59,14 +59,54 @@ pub const Builder = struct {
         rad.y = @min(rad.y, maxrad);
         rad.w = @min(rad.w, maxrad);
         rad.h = @min(rad.h, maxrad);
-        const tl = Point.Physical{ .x = r.x + rad.x, .y = r.y + rad.x };
-        const bl = Point.Physical{ .x = r.x + rad.h, .y = r.y + r.h - rad.h };
-        const br = Point.Physical{ .x = r.x + r.w - rad.w, .y = r.y + r.h - rad.w };
-        const tr = Point.Physical{ .x = r.x + r.w - rad.y, .y = r.y + rad.y };
-        path.addArc(tl, rad.x, math.pi * 1.5, math.pi, @abs(tl.y - bl.y) < 0.5);
-        path.addArc(bl, rad.h, math.pi, math.pi * 0.5, @abs(bl.x - br.x) < 0.5);
-        path.addArc(br, rad.w, math.pi * 0.5, 0, @abs(br.y - tr.y) < 0.5);
-        path.addArc(tr, rad.y, math.pi * 2.0, math.pi * 1.5, @abs(tr.x - tl.x) < 0.5);
+
+        // // Original arc functions
+        // const tl = Point.Physical{ .x = r.x + rad.x, .y = r.y + rad.x };
+        // const bl = Point.Physical{ .x = r.x + rad.h, .y = r.y + r.h - rad.h };
+        // const br = Point.Physical{ .x = r.x + r.w - rad.w, .y = r.y + r.h - rad.w };
+        // const tr = Point.Physical{ .x = r.x + r.w - rad.y, .y = r.y + rad.y };
+        // // path.addArc(tl, rad.x, math.pi * 1.5, math.pi, @abs(tl.y - bl.y) < 0.5);
+        // path.addArc(bl, rad.h, math.pi, math.pi * 0.5, @abs(bl.x - br.x) < 0.5);
+        // path.addArc(br, rad.w, math.pi * 0.5, 0, @abs(br.y - tr.y) < 0.5);
+        // path.addArc(tr, rad.y, math.pi * 2.0, math.pi * 1.5, @abs(tr.x - tl.x) < 0.5);
+
+        // New Bezier Curve experiment
+        // scaling_factor is based on the observation how addArc are scaled when the radius increases
+        const scaling_factor: f32 = 1.6;
+
+        // weight for right angle is known for 2^z0.5 / 2, both being a circle or oval
+        const weight = @as(f32, @sqrt(2.0) / 2.0);
+        if (rad.x == 0) {
+            path.addPoint(r.topLeft());
+        } else {
+            const count = estimatePointCount(scaling_factor, rad.x, weight);
+            const tl = r.topLeft();
+            path.addBezierRectCorner(weight, tl.plus(.{ .x = rad.x }), tl, tl.plus(.{ .y = rad.x }), count, false);
+        }
+
+        if (rad.h == 0) {
+            path.addPoint(r.bottomLeft());
+        } else {
+            const count = estimatePointCount(scaling_factor, rad.h, weight);
+            const bl = r.bottomLeft();
+            path.addBezierRectCorner(weight, bl.plus(.{ .y = -rad.h }), bl, bl.plus(.{ .x = rad.h }), count, false);
+        }
+
+        if (rad.w == 0) {
+            path.addPoint(r.bottomRight());
+        } else {
+            const count = estimatePointCount(scaling_factor, rad.w, weight);
+            const br = r.bottomRight();
+            path.addBezierRectCorner(weight, br.plus(.{ .x = -rad.w }), br, br.plus(.{ .y = -rad.w }), count, false);
+        }
+
+        if (rad.y == 0) {
+            path.addPoint(r.topRight());
+        } else {
+            const count = estimatePointCount(scaling_factor, rad.y, weight);
+            const tr = r.topRight();
+            path.addBezierRectCorner(weight, tr.plus(.{ .y = rad.y }), tr, tr.plus(.{ .x = -rad.y }), count, false);
+        }
     }
 
     /// Add line segments creating an arc to path.
@@ -89,16 +129,70 @@ pub const Builder = struct {
 
         var a: f32 = start;
         path.addPoint(.{ .x = center.x + radius * @cos(a), .y = center.y + radius * @sin(a) });
+        var points_added: usize = 0;
 
         while (a - end > theta) {
             // move to next fixed theta, this prevents shimmering on things like a spinner
             a = @floor((a - 0.001) / theta) * theta;
             path.addPoint(.{ .x = center.x + radius * @cos(a), .y = center.y + radius * @sin(a) });
+            points_added += 1;
+        }
+
+        if (radius > 8) {
+            std.debug.print("radius: {d}, points_added for curve: {d}\n", .{ radius, points_added });
         }
 
         if (!skip_end) {
             a = end;
             path.addPoint(.{ .x = center.x + radius * @cos(a), .y = center.y + radius * @sin(a) });
+        }
+    }
+
+    // TODO: Bezier Curve
+    // By definition, bezier curves seems a more efficient algorithm to plot a curve between points, compared
+    // to the trigonometric functions due to the number of CPU cycles for the operations, while leaving a bit more
+    // degree of freedom to the additional points for the curvature. Thus, in this commit, I wanna explore the
+    // efficiency of such algorithm to see if this has better performance improvement compared to the addArc, when
+    // there are large quantity of curved rectangles.
+
+    /// Predicts the number of points to be drawn for bezier curve, to balance the quality and the number of iteration of the rendering.
+    pub fn estimatePointCount(scaling_factor: f32, radius: f32, weight: f32) usize {
+        if (radius - 1 < 1) return 1;
+        // Predicts the number of points to be drawn, to balance the quality and the number of iteration of the rendering.
+        // the scaling is based on how addArc increase the number of point to be drawn which follows the log(n) curve.
+        const count = ((@log2(radius - 1) / @log2(scaling_factor)) + 2) * @abs(weight);
+        return @ceil(count);
+    }
+
+    pub fn addBezierRectCorner(
+        path: *Builder,
+        weight: f32,
+        p0: Point.Physical,
+        p1: Point.Physical,
+        p2: Point.Physical,
+        point_count: usize,
+        skip_end: bool,
+    ) void {
+        // std.debug.print("point_count: {d}\n", .{point_count});
+        for (0..point_count) |i| {
+            const t = @as(f32, @floatFromInt(i)) * (1.0 / @as(f32, @floatFromInt(point_count)));
+            const tm1 = 1 - t;
+            const tm1_square = tm1 * tm1;
+            const t_square = t * t;
+
+            const numerator = p0.scale(tm1_square, dvui.Point.Physical)
+                .plus(p1.scale(2 * tm1 * t * weight, dvui.Point.Physical))
+                .plus(p2.scale(t_square, dvui.Point.Physical));
+
+            const denominator = 1 / (tm1_square + (2 * tm1 * t * weight) + t_square);
+            const bezier_point = numerator.scale(denominator, dvui.Point.Physical);
+            path.addPoint(bezier_point);
+
+            // std.debug.print("t: {d}, p0: ({d},{d}), p2: ({d},{d}), bezier_point: ({d}, {d}), numerator: {any}, denominator: {d}\n", .{ t, p0.x, p0.y, p2.x, p2.y, bezier_point.x, bezier_point.y, numerator, denominator });
+        }
+
+        if (!skip_end) {
+            path.addPoint(p2);
         }
     }
 };

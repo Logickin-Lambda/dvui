@@ -71,41 +71,39 @@ pub const Builder = struct {
         // path.addArc(tr, rad.y, math.pi * 2.0, math.pi * 1.5, @abs(tr.x - tl.x) < 0.5);
 
         // New Bezier Curve experiment
-        // scaling_factor is based on the observation how addArc are scaled when the radius increases
-        const scaling_factor: f32 = 1.6;
-
         // weight for right angle is known for 2^z0.5 / 2, both being a circle or oval
+        const tl = r.topLeft();
+        const bl = r.bottomLeft();
+        const br = r.bottomRight();
+        const tr = r.topRight();
+
         const weight = @as(f32, @sqrt(2.0) / 2.0);
         if (rad.x == 0) {
             path.addPoint(r.topLeft());
         } else {
-            const count = estimatePointCount(scaling_factor, rad.x, weight);
-            const tl = r.topLeft();
-            path.addBezierRectCorner(weight, tl.plus(.{ .x = rad.x }), tl, tl.plus(.{ .y = rad.x }), count, false);
+            const count = estimatePointCount(rad.x);
+            path.addBezierRectCorner(weight, tl.plus(.{ .x = rad.x }), tl, tl.plus(.{ .y = rad.x }), count, @abs(tl.y + rad.x - bl.y + r.h - rad.h) < 0.5);
         }
 
         if (rad.h == 0) {
             path.addPoint(r.bottomLeft());
         } else {
-            const count = estimatePointCount(scaling_factor, rad.h, weight);
-            const bl = r.bottomLeft();
-            path.addBezierRectCorner(weight, bl.plus(.{ .y = -rad.h }), bl, bl.plus(.{ .x = rad.h }), count, false);
+            const count = estimatePointCount(rad.h);
+            path.addBezierRectCorner(weight, bl.plus(.{ .y = -rad.h }), bl, bl.plus(.{ .x = rad.h }), count, @abs(bl.x - br.x) < 1);
         }
 
         if (rad.w == 0) {
             path.addPoint(r.bottomRight());
         } else {
-            const count = estimatePointCount(scaling_factor, rad.w, weight);
-            const br = r.bottomRight();
-            path.addBezierRectCorner(weight, br.plus(.{ .x = -rad.w }), br, br.plus(.{ .y = -rad.w }), count, false);
+            const count = estimatePointCount(rad.w);
+            path.addBezierRectCorner(weight, br.plus(.{ .x = -rad.w }), br, br.plus(.{ .y = -rad.w }), count, @abs(br.y - tr.y) < 1);
         }
 
         if (rad.y == 0) {
             path.addPoint(r.topRight());
         } else {
-            const count = estimatePointCount(scaling_factor, rad.y, weight);
-            const tr = r.topRight();
-            path.addBezierRectCorner(weight, tr.plus(.{ .y = rad.y }), tr, tr.plus(.{ .x = -rad.y }), count, false);
+            const count = estimatePointCount(rad.y);
+            path.addBezierRectCorner(weight, tr.plus(.{ .y = rad.y }), tr, tr.plus(.{ .x = -rad.y }), count, @abs(tr.x - tl.x) < 1);
         }
     }
 
@@ -156,12 +154,10 @@ pub const Builder = struct {
     // there are large quantity of curved rectangles.
 
     /// Predicts the number of points to be drawn for bezier curve, to balance the quality and the number of iteration of the rendering.
-    pub fn estimatePointCount(scaling_factor: f32, radius: f32, weight: f32) usize {
-        if (radius - 1 < 1) return 1;
-        // Predicts the number of points to be drawn, to balance the quality and the number of iteration of the rendering.
-        // the scaling is based on how addArc increase the number of point to be drawn which follows the log(n) curve.
-        const count = ((@log2(radius - 1) / @log2(scaling_factor)) + 2) * @abs(weight);
-        return @ceil(count);
+    pub fn estimatePointCount(radius: f32) usize {
+        const err = 0.5;
+        const theta = math.acos(radius / (radius + err)); //math.acos(radius / (radius + 0.5));
+        return @floor((0.5 * math.pi) / theta);
     }
 
     pub fn addBezierRectCorner(
@@ -174,19 +170,18 @@ pub const Builder = struct {
         skip_end: bool,
     ) void {
         // std.debug.print("point_count: {d}\n", .{point_count});
+        const resolution = 1.0 / @as(f32, @floatFromInt(point_count));
         for (0..point_count) |i| {
-            const t = @as(f32, @floatFromInt(i)) * (1.0 / @as(f32, @floatFromInt(point_count)));
+            const t = @as(f32, @floatFromInt(i)) * resolution;
             const tm1 = 1 - t;
             const tm1_square = tm1 * tm1;
             const t_square = t * t;
+            const middle_weight = 2 * tm1 * t * weight;
 
-            const numerator = p0.scale(tm1_square, dvui.Point.Physical)
-                .plus(p1.scale(2 * tm1 * t * weight, dvui.Point.Physical))
-                .plus(p2.scale(t_square, dvui.Point.Physical));
-
-            const denominator = 1 / (tm1_square + (2 * tm1 * t * weight) + t_square);
-            const bezier_point = numerator.scale(denominator, dvui.Point.Physical);
-            path.addPoint(bezier_point);
+            const numerator_x = p0.x * tm1_square + p1.x * middle_weight + p2.x * t_square;
+            const numerator_y = p0.y * tm1_square + p1.y * middle_weight + p2.y * t_square;
+            const denominator = tm1_square + (middle_weight) + t_square;
+            path.addPoint(dvui.Point.Physical{ .x = numerator_x / denominator, .y = numerator_y / denominator });
 
             // std.debug.print("t: {d}, p0: ({d},{d}), p2: ({d},{d}), bezier_point: ({d}, {d}), numerator: {any}, denominator: {d}\n", .{ t, p0.x, p0.y, p2.x, p2.y, bezier_point.x, bezier_point.y, numerator, denominator });
         }
